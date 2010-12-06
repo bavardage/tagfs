@@ -1,0 +1,6 @@
+
+A tagged FUSE filesystem in haskell.
+
+Yeah, probably best not to stick very important stuff in here.
+
+(no danger of that yet though, it doesn't even show any files yet :P)
