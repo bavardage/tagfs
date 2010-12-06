@@ -19,10 +19,10 @@ import System.Posix.Files (ownerReadMode, ownerExecuteMode, ownerWriteMode, owne
 --differentiate keys for filenames, keys for tags
 --so things don't die if people decide tagging things
 --  with sha1 hashes is a good idea
-filenameTag, tagTag, tempTag :: String -> String
-filenameTag f = '~' : f
-tagTag t = '!' : t
-tempTag t = '?' : t
+filenameTag, tagTag, tempTag :: String -> String --think up better characters, a b c  be carefull, should avoid glob specials
+filenameTag f = 'a' : f
+tagTag t = 'b' : t
+tempTag t = 'c' : t
 
 addFileTag :: WithRedis m => String -> String -> m ()
 addFileTag f t = do
@@ -40,6 +40,21 @@ getTagsForFile, getFilesForTag :: (WithRedis m) => String -> m (Reply String)
 getTagsForFile = smembers . filenameTag
 getFilesForTag = smembers . tagTag
 
+-- get all standard tags used for tagging files
+-- we should do this in a better way, supposedly the keys command is bad
+-- keep track of which tags are used, kill them when no file uses any more
+-- could get messy to keep track of, 
+-- could just run maintenance every so often instead
+getAllTags :: WithRedis m => m ([String])
+getAllTags = do
+  response <- keys $ tagTag "*"
+  tags <- case response of
+           RMulti (Just rs) -> return $ filter (not . null) $ map dotag rs
+           _ -> return []
+  return $ map tail tags
+ where
+   dotag r = case r of (RBulk((Just t))) -> t
+                       _ -> ""
 
 
 data BooleanTree = Union BooleanTree BooleanTree [String]
@@ -96,12 +111,16 @@ emptyStat = FileStat
     }
 -- in future use POSIX getFileStatus
 
-openDirectory :: FilePath -> IO Errno
+openDirectory :: WithRedis m => FilePath -> m Errno
 openDirectory f = return eOK
 
-readDirectory :: FilePath -> IO (Either Errno [(FilePath, FileStat)])
-readDirectory f = return $ Right dots
-    where dots = [(".", directory), ("..", directory)]
+readDirectory :: WithRedis m => FilePath -> m (Either Errno [(FilePath, FileStat)])
+readDirectory f = do
+  let dots = [(".", directory), ("..", directory)]
+  normalTags <- getAllTags
+  let normalDirs = map (\t -> (t, directory)) normalTags
+  return $ Right (dots ++ normalDirs)
+
 
 getFileStat :: FilePath -> IO (Either Errno FileStat)
 getFileStat f = do
@@ -122,33 +141,32 @@ getFileSystemStats str =
     }
 
 
-runFuse :: IO ()
-runFuse = do
-  withArgs ["/tmp/tagfs2/"] $ fuseMain fuseOps defaultExceptionHandler
+runFuse :: Redis -> IO ()
+runFuse redis = withArgs ["/tmp/tagfs2/"] $ fuseMain (fuseOps redis) defaultExceptionHandler
 
-fuseOps :: FuseOperations FH
-fuseOps = defaultFuseOps { fuseOpenDirectory = openDirectory
-                         , fuseReadDirectory = readDirectory
-                         , fuseGetFileStat = getFileStat
-
-                         -- , fuseOpen               = undefined
-                         -- , fuseFlush              = undefined
-                         -- , fuseRead               = undefined
-                         , fuseGetFileSystemStats = getFileSystemStats
-
-                         -- Dummies to make FUSE happy.
-                         , fuseSetFileSize      = \_ _   -> return eOK
-                         , fuseSetFileTimes     = \_ _ _ -> return eOK
-                         , fuseSetFileMode      = \_ _   -> return eOK
-                         , fuseSetOwnerAndGroup = \_ _ _ -> return eOK
-                         }
+fuseOps :: Redis -> FuseOperations FH
+fuseOps redis = defaultFuseOps { fuseOpenDirectory = (runWithRedis redis) . openDirectory
+                               , fuseReadDirectory = (runWithRedis redis) . readDirectory
+                               , fuseGetFileStat = getFileStat
+                                                   
+                               -- , fuseOpen               = undefined
+                               -- , fuseFlush              = undefined
+                               -- , fuseRead               = undefined
+                               , fuseGetFileSystemStats = getFileSystemStats
+                                                          
+                               -- Dummies to make FUSE happy.
+                               , fuseSetFileSize      = \_ _   -> return eOK
+                               , fuseSetFileTimes     = \_ _ _ -> return eOK
+                               , fuseSetFileMode      = \_ _   -> return eOK
+                               , fuseSetOwnerAndGroup = \_ _ _ -> return eOK
+                               }
 
 ------------------------------------------------------------
 -- Testy bleh stuff
 ------------------------------------------------------------
 main = do
   redis <- connect localhost defaultPort
-  runFuse
+  runFuse redis
 
 go :: WithRedis m => m ()
 go = do
