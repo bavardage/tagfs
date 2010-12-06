@@ -104,7 +104,8 @@ readDirectory f = return $ Right dots
     where dots = [(".", directory), ("..", directory)]
 
 getFileStat :: FilePath -> IO (Either Errno FileStat)
-getFileStat f = return $ Right regularFile
+getFileStat f = do
+  return $ Right directory --omg everything is a directory :P EEEP
 
 --blatantly copied from FunionFS
 -- what the hell is the argument even?
@@ -128,12 +129,12 @@ runFuse = do
 fuseOps :: FuseOperations FH
 fuseOps = defaultFuseOps { fuseOpenDirectory = openDirectory
                          , fuseReadDirectory = readDirectory
---                         , fuseGetFileStat = getFileStat
+                         , fuseGetFileStat = getFileStat
 
                          -- , fuseOpen               = undefined
                          -- , fuseFlush              = undefined
                          -- , fuseRead               = undefined
---                         , fuseGetFileSystemStats = getFileSystemStats
+                         , fuseGetFileSystemStats = getFileSystemStats
 
                          -- Dummies to make FUSE happy.
                          , fuseSetFileSize      = \_ _   -> return eOK
