@@ -168,9 +168,5 @@ main = do
   redis <- connect localhost defaultPort
   runFuse redis
 
-go :: WithRedis m => m ()
-go = do
-  addFileTag "pic1.jpg" "cat"
-  addFileTag "pic1.jpg" "lol"
 
 
