@@ -11,10 +11,14 @@ import qualified Data.ByteString.Char8 as BS
 import Data.List (union, intersect)
 import Data.Maybe (isNothing, fromJust)
 import Database.Redis.ByteStringClass
+import System.FilePath
 
 ------------------------------------------------------------
 -- Utils
 ------------------------------------------------------------
+
+putToLog :: String -> IO ()
+putToLog str = appendFile "/home/ben/tagfslog" (str ++ "\n")
 
 getRealFilepath :: String -> String
 getRealFilepath fp = "~/.tagfs/store/" ++ fp
@@ -73,11 +77,20 @@ getAllTags = do
 
 data BooleanTree = Union BooleanTree BooleanTree 
                  | Intersect BooleanTree BooleanTree
-                 | Tag String
-foldBT :: WithRedis m => BooleanTree -> m ([String])
+                 | Tag String | EmptyTree
+foldBT :: WithRedis m => BooleanTree -> m [String]
 foldBT (Intersect a b) = liftM2 intersect (foldBT a) (foldBT b)
 foldBT (Union a b) = liftM2 union (foldBT a) (foldBT b)
 foldBT (Tag s) = liftM responseToList $ smembers s
+foldBT _ = return []
+
+-- filepath -> list of filenames resulting from intersect these tags
+intersectFilePath :: WithRedis m => FilePath -> m [String]
+intersectFilePath fp = case dirs of 
+                         [] -> return []
+                         xs -> foldBT $ foldr1 Intersect $ map (Tag . tagTag) xs
+    where
+      dirs = tail $ splitDirectories ([pathSeparator] </> fp)
 
 ------------------------------------------------------------
 -- Fuse stuff
@@ -121,13 +134,35 @@ readDirectory f = do
   let dots = [(".", directory), ("..", directory)]
   normalTags <- getAllTags
   let normalDirs = map (\t -> (t, directory)) normalTags
-  
-  return $ Right (dots ++ normalDirs)
+  filenames <- intersectFilePath f --this'll actually give us hashes
+                                  --which must convert to filenames
+  let filepairs = map (\filename -> (filename, regularFile)) filenames
+      special = show filenames
+  return $ Right (dots ++ normalDirs ++ [(special, regularFile)] ++ filepairs)
 
 
-getFileStat :: FilePath -> IO (Either Errno FileStat)
-getFileStat f = do
-  return $ Right directory --omg everything is a directory :P EEEP
+getFileStat :: WithRedis m => FilePath -> m (Either Errno FileStat)
+-- we must assume that it's a tag unless it gives us a unique selection.. ERM
+-- so, split the path, take everything apart from the last thing
+-- if there is a unique file with all of these tags then ITSAFILE
+-- otherwise, directory time!
+getFileStat "." = return $ Right directory
+getFileStat ".." = return $ Right directory
+getFileStat "/" = do
+  liftIO $ putToLog "requesting filestat for ROOT"
+  return $ Right directory
+getFileStat f = do 
+  liftIO $ putToLog $ "Requesting filestat for: " ++ f
+  let dirs = tail $ splitDirectories ([pathSeparator] </> f)
+  guessTags <- intersectFilePath $ joinPath $ init dirs
+  let l = last dirs
+      result = case l of
+                 "." -> directory
+                 ".." -> directory
+                 _ -> if l `elem` guessTags then regularFile else directory
+  liftIO $ putToLog ("getFileStat filepath is " ++ f)
+  liftIO $ putToLog ("getFileStat " ++ l ++ " is " ++ (show $ statEntryType result))
+  return $ Right result --omg everything is a directory :P EEEP
 
 --blatantly copied from FunionFS
 -- what the hell is the argument even?
@@ -150,7 +185,7 @@ runFuse redis = withArgs ["/tmp/tagfs2/"] $ fuseMain (fuseOps redis) defaultExce
 fuseOps :: Redis -> FuseOperations FH
 fuseOps redis = defaultFuseOps { fuseOpenDirectory = (runWithRedis redis) . openDirectory
                                , fuseReadDirectory = (runWithRedis redis) . readDirectory
-                               , fuseGetFileStat = getFileStat
+                               , fuseGetFileStat = (runWithRedis redis) . getFileStat
                                                    
                                -- , fuseOpen               = undefined
                                -- , fuseFlush              = undefined
