@@ -2,7 +2,7 @@ import Database.Redis.Monad.State (runWithRedis)
 import Database.Redis.Monad hiding (connect)
 import Database.Redis.Redis (connect)
 import Control.Monad.Trans
-import Control.Monad (liftM)
+import Control.Monad (liftM, liftM2)
 import System.Fuse
 import System.Environment (withArgs)
 import System.Posix.Files (ownerReadMode, ownerExecuteMode, ownerWriteMode, ownerModes, getFileStatus)
@@ -41,7 +41,7 @@ filenameTag f = 'a' : f --the filename hash
 tagTag t = 'b' : t
 tempTag t = 'c' : t
 filenameNameTag f = 'd' : f
-hashTag h = 'e' : h
+hashTag h = 'e' : h --WHAT IS THIS? I'm not sure.. filenameTag is this, surely
 
 addFileTag :: WithRedis m => String -> String -> m ()
 addFileTag f t = do
@@ -75,10 +75,8 @@ data BooleanTree = Union BooleanTree BooleanTree
                  | Intersect BooleanTree BooleanTree
                  | Tag String
 foldBT :: WithRedis m => BooleanTree -> m ([String])
-foldBT (Intersect a b) = undefined
-  
-foldBT (Union a b) = undefined
-
+foldBT (Intersect a b) = liftM2 intersect (foldBT a) (foldBT b)
+foldBT (Union a b) = liftM2 union (foldBT a) (foldBT b)
 foldBT (Tag s) = liftM responseToList $ smembers s
 
 ------------------------------------------------------------
