@@ -6,11 +6,28 @@ import Control.Monad (liftM)
 import System.Fuse
 import System.Environment (withArgs)
 import System.Posix.Files (ownerReadMode, ownerExecuteMode, ownerWriteMode, ownerModes, getFileStatus)
+import Data.Digest.OpenSSL.MD5
+import qualified Data.ByteString.Char8 as BS
+import Data.List (union, intersect)
+import Data.Maybe (isNothing, fromJust)
+import Database.Redis.ByteStringClass
 
 ------------------------------------------------------------
 -- Utils
 ------------------------------------------------------------
 
+getRealFilepath :: String -> String
+getRealFilepath fp = "~/.tagfs/store/" ++ fp
+
+
+--Relpy is RMulti filled with RBulk
+responseToList :: (BS a) => Reply a -> [a]
+responseToList (RMulti (Just rs)) = rbulksToList rs
+    where
+      rbulksToList [] = []
+      rbulksToList ((RBulk Nothing):xs) = rbulksToList xs
+      rbulksToList ((RBulk (Just x)):xs) = x : rbulksToList xs
+responseToList _ = []
 
 ------------------------------------------------------------
 -- Database stuff
@@ -19,10 +36,12 @@ import System.Posix.Files (ownerReadMode, ownerExecuteMode, ownerWriteMode, owne
 --differentiate keys for filenames, keys for tags
 --so things don't die if people decide tagging things
 --  with sha1 hashes is a good idea
-filenameTag, tagTag, tempTag :: String -> String --think up better characters, a b c  be carefull, should avoid glob specials
-filenameTag f = 'a' : f
+filenameTag, tagTag, tempTag, filenameNameTag, hashTag :: String -> String --think up better characters, a b c  be carefull, should avoid glob specials
+filenameTag f = 'a' : f --the filename hash
 tagTag t = 'b' : t
 tempTag t = 'c' : t
+filenameNameTag f = 'd' : f
+hashTag h = 'e' : h
 
 addFileTag :: WithRedis m => String -> String -> m ()
 addFileTag f t = do
@@ -48,41 +67,26 @@ getFilesForTag = smembers . tagTag
 getAllTags :: WithRedis m => m ([String])
 getAllTags = do
   response <- keys $ tagTag "*"
-  tags <- case response of
-           RMulti (Just rs) -> return $ filter (not . null) $ map dotag rs
-           _ -> return []
+  let tags = responseToList response
   return $ map tail tags
- where
-   dotag r = case r of (RBulk((Just t))) -> t
-                       _ -> ""
 
 
-data BooleanTree = Union BooleanTree BooleanTree [String]
-                 | Intersect BooleanTree BooleanTree [String]
-                 | Tag String [String]
-                 | TempTag String [String] deriving Show
----oooo dear so many problems, need to kill the temporary tags
-foldBT :: WithRedis m => BooleanTree -> m (BooleanTree)
-foldBT (Intersect a b _) = do
-  (x,xs) <- liftM detag' $ foldBT a
-  (y,ys) <- liftM detag' $ foldBT b
-  let tt = tempTag $ '^' : x ++ y
-  sinterStore tt [tagTag x, tagTag y]
-  return $ TempTag tt (xs ++ ys)
-foldBT (Union a b _) = do
-  (x, xs) <- liftM detag' $ foldBT a
-  (y, ys) <- liftM detag' $ foldBT b
-  let tt = tempTag $ '|' : x ++ y --random chars to avoid conflicts
-  sunionStore tt [tagTag x, tagTag y]
-  return $ TempTag tt (xs ++ ys)
-foldBT (Tag s _) = return (Tag s [])
-foldBT (TempTag s _) = return (TempTag s [])
-detag' (Tag x ts) = (x, ts)
-detag' (TempTag x ts) = (x, ts)
+data BooleanTree = Union BooleanTree BooleanTree 
+                 | Intersect BooleanTree BooleanTree
+                 | Tag String
+foldBT :: WithRedis m => BooleanTree -> m ([String])
+foldBT (Intersect a b) = undefined
+  
+foldBT (Union a b) = undefined
+
+foldBT (Tag s) = liftM responseToList $ smembers s
+
 ------------------------------------------------------------
 -- Fuse stuff
 ------------------------------------------------------------
-data FH = String
+
+type FH = BS.ByteString
+
 directory, regularFile, emptyStat :: FileStat
 directory = emptyStat
     { statEntryType = Directory
@@ -119,6 +123,7 @@ readDirectory f = do
   let dots = [(".", directory), ("..", directory)]
   normalTags <- getAllTags
   let normalDirs = map (\t -> (t, directory)) normalTags
+  
   return $ Right (dots ++ normalDirs)
 
 
